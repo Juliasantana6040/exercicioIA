@@ -1,0 +1,214 @@
+using System;
+using System.IO;
+using System.Net.Http;
+using System.Text.Json;
+using System.Linq;
+using System.Threading.Tasks;
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        // Coleta de informações do trabalhador
+        Console.Write("Nome: ");
+        string nome = Console.ReadLine();
+
+        Console.Write("Salário Bruto: ");
+        if (!decimal.TryParse(Console.ReadLine(), out decimal salarioBruto))
+        {
+            Console.WriteLine("Salário Bruto inválido.");
+            return;
+        }
+
+        Console.Write("Desconto do INSS: ");
+        if (!decimal.TryParse(Console.ReadLine(), out decimal descontoInss))
+        {
+            Console.WriteLine("Desconto do INSS inválido.");
+            return;
+        }
+
+        Console.Write("Número de Dependentes: ");
+        if (!int.TryParse(Console.ReadLine(), out int dependentes))
+        {
+            Console.WriteLine("Número de Dependentes inválido.");
+            return;
+        }
+
+        Console.Write("Valor total de descontos cabíveis para dedução de IRRF: ");
+        if (!decimal.TryParse(Console.ReadLine(), out decimal descontosIrrf))
+        {
+            Console.WriteLine("Descontos IRRF inválidos.");
+            return;
+        }
+
+        Console.Write("CPF: ");
+        string cpf = Console.ReadLine();
+
+        if (!ValidarCpf(cpf))
+        {
+            Console.WriteLine("CPF inválido.");
+            return;
+        }
+
+        Console.Write("CEP: ");
+        string cep = Console.ReadLine();
+
+        // Consultar o endereço pelo CEP
+        string endereco = await ConsultarCep(cep);
+        if (endereco == null)
+        {
+            Console.WriteLine("CEP inválido ou não encontrado.");
+            return;
+        }
+
+        // Exibição do endereço completo
+        Console.WriteLine($"Endereço: {endereco}");
+
+        // Cálculo do IRRF e salário líquido
+        decimal irrf = CalcularIrrf(salarioBruto, descontoInss, dependentes, descontosIrrf);
+        decimal salarioLiquido = salarioBruto - descontoInss - irrf;
+
+        // Exibição do salário líquido
+        Console.WriteLine($"Salário Líquido: {salarioLiquido:C}");
+
+        // Armazenamento dos dados
+        SalvarDados(nome, salarioBruto, descontoInss, dependentes, descontosIrrf, cpf, cep, endereco, irrf, salarioLiquido);
+    }
+
+    static bool ValidarCpf(string cpf)
+    {
+        cpf = cpf.Replace(".", "").Replace("-", "");
+        if (cpf.Length != 11 || !cpf.All(char.IsDigit)) return false;
+
+        for (int j = 0; j < 10; j++)
+            if (new string((char)('0' + j), 11) == cpf)
+                return false;
+
+        int[] multiplicador1 = new int[9] { 10, 9, 8, 7, 6, 5, 4, 3, 2 };
+        int[] multiplicador2 = new int[10] { 11, 10, 9, 8, 7, 6, 5, 4, 3, 2 };
+
+        string tempCpf = cpf.Substring(0, 9);
+        int soma = 0;
+
+        for (int i = 0; i < 9; i++)
+            soma += int.Parse(tempCpf[i].ToString()) * multiplicador1[i];
+
+        int resto = soma % 11;
+        if (resto < 2)
+            resto = 0;
+        else
+            resto = 11 - resto;
+
+        string digito = resto.ToString();
+        tempCpf += digito;
+
+        soma = 0;
+        for (int i = 0; i < 10; i++)
+            soma += int.Parse(tempCpf[i].ToString()) * multiplicador2[i];
+
+        resto = soma % 11;
+        if (resto < 2)
+            resto = 0;
+        else
+            resto = 11 - resto;
+
+        digito += resto.ToString();
+
+        return cpf.EndsWith(digito);
+    }
+
+    static async Task<string> ConsultarCep(string cep)
+    {
+        using (HttpClient client = new HttpClient())
+        {
+            try
+            {
+                HttpResponseMessage response = await client.GetAsync($"https://viacep.com.br/ws/{cep}/json/");
+                response.EnsureSuccessStatusCode();
+                string responseBody = await response.Content.ReadAsStringAsync();
+                var endereco = JsonSerializer.Deserialize<Endereco>(responseBody);
+                if (endereco != null && !endereco.Erro)
+                {
+                    return $"{endereco.Logradouro}, {endereco.Bairro}, {endereco.Localidade} - {endereco.Uf}";
+                }
+            }
+            catch
+            {
+                // Tratar erros de consulta
+            }
+        }
+        return null;
+    }
+
+    static decimal CalcularIrrf(decimal salarioBruto, decimal descontoInss, int dependentes, decimal descontosIrrf)
+    {
+        decimal baseCalculo = salarioBruto - descontoInss - (dependentes * 189.59m) - descontosIrrf;
+        decimal irrf = 0;
+
+        if (baseCalculo <= 1903.98m)
+        {
+            irrf = 0;
+        }
+        else if (baseCalculo <= 2826.65m)
+        {
+            irrf = (baseCalculo * 0.075m) - 142.80m;
+        }
+        else if (baseCalculo <= 3751.05m)
+        {
+            irrf = (baseCalculo * 0.15m) - 354.80m;
+        }
+        else if (baseCalculo <= 4664.68m)
+        {
+            irrf = (baseCalculo * 0.225m) - 636.13m;
+        }
+        else
+        {
+            irrf = (baseCalculo * 0.275m) - 869.36m;
+        }
+
+        return irrf;
+    }
+
+    static void SalvarDados(string nome, decimal salarioBruto, decimal descontoInss, int dependentes, decimal descontosIrrf, string cpf, string cep, string endereco, decimal irrf, decimal salarioLiquido)
+    {
+        string path = "dados_trabalhador.txt";
+        string[] lines = File.Exists(path) ? File.ReadAllLines(path) : new string[0];
+        bool exists = false;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            if (lines[i].StartsWith(cpf))
+            {
+                lines[i] = FormatarDados(nome, salarioBruto, descontoInss, dependentes, descontosIrrf, cpf, cep, endereco, irrf, salarioLiquido);
+                exists = true;
+                break;
+            }
+        }
+
+        if (!exists)
+        {
+            using (StreamWriter sw = File.AppendText(path))
+            {
+                sw.WriteLine(FormatarDados(nome, salarioBruto, descontoInss, dependentes, descontosIrrf, cpf, cep, endereco, irrf, salarioLiquido));
+            }
+        }
+        else
+        {
+            File.WriteAllLines(path, lines);
+        }
+    }
+
+    static string FormatarDados(string nome, decimal salarioBruto, decimal descontoInss, int dependentes, decimal descontosIrrf, string cpf, string cep, string endereco, decimal irrf, decimal salarioLiquido)
+    {
+        return $"{cpf};{nome};{salarioBruto};{descontoInss};{dependentes};{descontosIrrf};{cep};{endereco};{irrf};{salarioLiquido}";
+    }
+}
+
+public class Endereco
+{
+    public string Logradouro { get; set; }
+    public string Bairro { get; set; }
+    public string Localidade { get; set; }
+    public string Uf { get; set; }
+    public bool Erro { get; set; }
+}
